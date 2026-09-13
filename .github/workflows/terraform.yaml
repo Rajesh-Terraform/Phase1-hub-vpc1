@@ -1,7 +1,11 @@
 name: phase1-hub-vpc1-destroy
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  
+
 
 permissions:
   id-token: write
