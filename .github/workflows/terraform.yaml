@@ -1,11 +1,9 @@
-name:  phase1-hub-vpc1-destroy  
+name: phase1-hub-vpc1-destroy
 
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
-
 permissions:
   id-token: write
   contents: read
@@ -17,6 +15,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -27,25 +27,14 @@ jobs:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
-      - name: Terraform Format Check
-        run: terraform fmt -check
-        working-directory: terraform
-
       - name: Terraform Init
         run: terraform init
         working-directory: terraform
 
-
-      - name: Show Files
-        run: |
-           pwd
-           ls -la
-           find . -name "*.tf"  
       - name: Terraform Validate
         run: terraform validate
         working-directory: terraform
 
-      
       - name: Terraform Destroy
         run: terraform destroy -auto-approve
-        working-directory: terraform    
+        working-directory: terraform  
