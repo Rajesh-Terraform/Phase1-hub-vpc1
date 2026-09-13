@@ -49,10 +49,7 @@ jobs:
         run: terraform workspace show
         working-directory: terraform
 
-      - name: Terraform State List
-        run: terraform state list
-        working-directory: terraform
-
+     
       - name: Terraform Validate
         run: terraform validate
         working-directory: terraform
