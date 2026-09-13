@@ -1,77 +1,272 @@
-name: phase1-hub-vpc1-destroy
+name: phase1-hub-vpc1-destroy-no-state
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+    inputs:
+      vpc_id:
+        description: "VPC ID to destroy, example: vpc-0123456789abcdef0"
+        required: true
+        type: string
+
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  terraform-destroy:
+  destroy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
-      - name: Show Terraform Files
+      - name: Verify VPC
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
         run: |
-          pwd
-          echo "Repository files:"
-          ls -la
+          set -e
 
-          echo ""
-          echo "Terraform files:"
-          find terraform -type f -name "*.tf" -print
+          echo "Checking VPC: $VPC_ID"
 
-      - name: Terraform Format Check
-        working-directory: terraform
-        run: terraform fmt -check -recursive
+          aws ec2 describe-vpcs \
+            --vpc-ids "$VPC_ID" \
+            --region ap-south-1 \
+            --query 'Vpcs[0].[VpcId,CidrBlock,State]' \
+            --output table
 
-      - name: Terraform Init
-        working-directory: terraform
-        run: terraform init -input=false
-
-      - name: Terraform Workspace
-        working-directory: terraform
+      - name: Delete VPC Endpoints
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
         run: |
-          echo "Current workspace:"
-          terraform workspace show
+          set -e
 
-          echo ""
-          echo "Available workspaces:"
-          terraform workspace list
+          ENDPOINTS=$(aws ec2 describe-vpc-endpoints \
+            --filters Name=vpc-id,Values="$VPC_ID" \
+            --query 'VpcEndpoints[*].VpcEndpointId' \
+            --output text)
 
-     
-      - name: Terraform Validate
-        working-directory: terraform
-        run: terraform validate
+          if [ -n "$ENDPOINTS" ]; then
+            echo "Deleting VPC endpoints..."
+            aws ec2 delete-vpc-endpoints \
+              --vpc-endpoint-ids $ENDPOINTS
+          else
+            echo "No VPC endpoints found."
+          fi
 
-      - name: Terraform Destroy Plan
-        working-directory: terraform
+      - name: Delete NAT Gateways
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
         run: |
-          terraform plan \
-            -destroy \
-            -input=false \
-            -out=tfplan-destroy
+          set -e
 
-      - name: Terraform Destroy
-        working-directory: terraform
+          NAT_IDS=$(aws ec2 describe-nat-gateways \
+            --filter Name=vpc-id,Values="$VPC_ID" \
+            --query 'NatGateways[?State!=`deleted`].NatGatewayId' \
+            --output text)
+
+          if [ -n "$NAT_IDS" ]; then
+            echo "Deleting NAT gateways..."
+
+            for NAT_ID in $NAT_IDS; do
+              aws ec2 delete-nat-gateway \
+                --nat-gateway-id "$NAT_ID"
+            done
+
+            echo "Waiting for NAT gateways to disappear..."
+
+            for NAT_ID in $NAT_IDS; do
+              aws ec2 wait nat-gateway-deleted \
+                --nat-gateway-ids "$NAT_ID" || true
+            done
+          else
+            echo "No NAT gateways found."
+          fi
+
+      - name: Release Elastic IPs
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
         run: |
-          terraform apply \
-            -input=false \
-            -auto-approve \
-            tfplan-destroy
+          set -e
 
-     
+          ALLOC_IDS=$(aws ec2 describe-addresses \
+            --region ap-south-1 \
+            --query 'Addresses[?AssociationId==null].AllocationId' \
+            --output text)
+
+          if [ -n "$ALLOC_IDS" ]; then
+            for ALLOC_ID in $ALLOC_IDS; do
+              echo "Checking EIP $ALLOC_ID"
+
+              aws ec2 release-address \
+                --allocation-id "$ALLOC_ID" || true
+            done
+          fi
+
+      - name: Delete Network Interfaces
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          set -e
+
+          ENIS=$(aws ec2 describe-network-interfaces \
+            --filters Name=vpc-id,Values="$VPC_ID" \
+            --query 'NetworkInterfaces[*].NetworkInterfaceId' \
+            --output text)
+
+          if [ -n "$ENIS" ]; then
+            echo "Network interfaces still exist:"
+            echo "$ENIS"
+
+            for ENI in $ENIS; do
+              echo "Checking ENI $ENI"
+
+              DESCRIPTION=$(aws ec2 describe-network-interfaces \
+                --network-interface-ids "$ENI" \
+                --query 'NetworkInterfaces[0].Description' \
+                --output text)
+
+              echo "Description: $DESCRIPTION"
+
+              aws ec2 delete-network-interface \
+                --network-interface-id "$ENI" || true
+            done
+          else
+            echo "No network interfaces found."
+          fi
+
+      - name: Delete Subnets
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          set -e
+
+          SUBNETS=$(aws ec2 describe-subnets \
+            --filters Name=vpc-id,Values="$VPC_ID" \
+            --query 'Subnets[*].SubnetId' \
+            --output text)
+
+          if [ -n "$SUBNETS" ]; then
+            for SUBNET in $SUBNETS; do
+              echo "Deleting subnet $SUBNET"
+              aws ec2 delete-subnet \
+                --subnet-id "$SUBNET"
+            done
+          else
+            echo "No subnets found."
+          fi
+
+      - name: Delete Route Tables
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          set -e
+
+          ROUTE_TABLES=$(aws ec2 describe-route-tables \
+            --filters Name=vpc-id,Values="$VPC_ID" \
+            --query 'RouteTables[*].RouteTableId' \
+            --output text)
+
+          for RT in $ROUTE_TABLES; do
+
+            MAIN=$(aws ec2 describe-route-tables \
+              --route-table-ids "$RT" \
+              --query 'RouteTables[0].Associations[?Main==`true`].Main' \
+              --output text)
+
+            if [ "$MAIN" = "True" ]; then
+              echo "Skipping main route table $RT"
+              continue
+            fi
+
+            echo "Deleting route table $RT"
+
+            ASSOCIATIONS=$(aws ec2 describe-route-tables \
+              --route-table-ids "$RT" \
+              --query 'RouteTables[0].Associations[?Main!=`true`].RouteTableAssociationId' \
+              --output text)
+
+            for ASSOC in $ASSOCIATIONS; do
+              aws ec2 disassociate-route-table \
+                --association-id "$ASSOC" || true
+            done
+
+            aws ec2 delete-route-table \
+              --route-table-id "$RT" || true
+          done
+
+      - name: Delete Internet Gateways
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          set -e
+
+          IGWS=$(aws ec2 describe-internet-gateways \
+            --filters Name=attachment.vpc-id,Values="$VPC_ID" \
+            --query 'InternetGateways[*].InternetGatewayId' \
+            --output text)
+
+          for IGW in $IGWS; do
+            echo "Detaching Internet Gateway $IGW"
+
+            aws ec2 detach-internet-gateway \
+              --internet-gateway-id "$IGW" \
+              --vpc-id "$VPC_ID" || true
+
+            echo "Deleting Internet Gateway $IGW"
+
+            aws ec2 delete-internet-gateway \
+              --internet-gateway-id "$IGW"
+          done
+
+      - name: Delete Security Groups
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          set -e
+
+          SGS=$(aws ec2 describe-security-groups \
+            --filters Name=vpc-id,Values="$VPC_ID" \
+            --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+            --output text)
+
+          for SG in $SGS; do
+            echo "Deleting security group $SG"
+
+            aws ec2 delete-security-group \
+              --group-id "$SG" || true
+          done
+
+      - name: Delete Main VPC
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          set -e
+
+          echo "Final VPC deletion:"
+          aws ec2 describe-vpcs \
+            --vpc-ids "$VPC_ID" \
+            --query 'Vpcs[0].[VpcId,CidrBlock,State]' \
+            --output table
+
+          aws ec2 delete-vpc \
+            --vpc-id "$VPC_ID"
+
+          echo "VPC deletion requested."
+
+      - name: Verify VPC Deleted
+        env:
+          VPC_ID: ${{ inputs.vpc_id }}
+        run: |
+          if aws ec2 describe-vpcs --vpc-ids "$VPC_ID" >/dev/null 2>&1; then
+            echo "ERROR: VPC still exists."
+            exit 1
+          else
+            echo "SUCCESS: VPC has been deleted."
+          fi  
