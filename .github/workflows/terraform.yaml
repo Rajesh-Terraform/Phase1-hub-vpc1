@@ -2,6 +2,9 @@
 name: phase1-hub-vpc1-destroy
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -50,5 +53,5 @@ jobs:
 
       - name: Terraform Destroy
         run: terraform apply -auto-approve destroy.tfplan
-        working-directory: terraform  
+        working-directory: terraform    
 
