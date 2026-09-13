@@ -1,3 +1,6 @@
+
+name: phase1-hub-vpc1-destroy
+
 on:
   push:
     branches:
@@ -14,59 +17,318 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
-      - name: Find VPC
-        id: find-vpc
+      # --------------------------------------------------
+      # FIND VPC
+      # --------------------------------------------------
+      - name: Find phase1-hub-vpc1 VPC
+        shell: bash
         run: |
           set -e
 
-          echo "Searching for VPCs in ap-south-1..."
-
-          VPC_IDS=$(aws ec2 describe-vpcs \
+          VPC_ID=$(aws ec2 describe-vpcs \
             --region ap-south-1 \
-            --query 'Vpcs[*].VpcId' \
+            --filters "Name=tag:Name,Values=phase1-hub-vpc1" \
+            --query "Vpcs[0].VpcId" \
             --output text)
 
-          echo "Found VPCs:"
-          echo "$VPC_IDS"
-
-          if [ -z "$VPC_IDS" ]; then
-            echo "ERROR: No VPC found."
+          if [ "$VPC_ID" = "None" ] || [ -z "$VPC_ID" ]; then
+            echo "ERROR: phase1-hub-vpc1 VPC was not found."
             exit 1
           fi
 
-          COUNT=$(echo "$VPC_IDS" | wc -w)
+          echo "VPC_ID=$VPC_ID" >> "$GITHUB_ENV"
 
-          if [ "$COUNT" -ne 1 ]; then
-            echo "ERROR: More than one VPC exists."
-            echo "VPCs found:"
-            echo "$VPC_IDS"
-            echo ""
-            echo "I will NOT automatically delete them."
-            exit 1
-          fi
+          echo "Found VPC:"
+          echo "$VPC_ID"
 
-          VPC_ID="$VPC_IDS"
-
-          echo "Selected VPC: $VPC_ID"
-
-          echo "vpc_id=$VPC_ID" >> "$GITHUB_OUTPUT"
-
-      - name: Verify VPC
-        env:
-          VPC_ID: ${{ steps.find-vpc.outputs.vpc_id }}
+      # --------------------------------------------------
+      # DELETE NAT GATEWAYS
+      # --------------------------------------------------
+      - name: Delete NAT Gateways
+        shell: bash
         run: |
           set -e
 
-          echo "Checking VPC: $VPC_ID"
-
-          aws ec2 describe-vpcs \
-            --vpc-ids "$VPC_ID" \
+          NAT_IDS=$(aws ec2 describe-nat-gateways \
             --region ap-south-1 \
-            --query 'Vpcs[0].[VpcId,CidrBlock,State]' \
-            --output table
+            --filter "Name=vpc-id,Values=$VPC_ID" \
+            --query "NatGateways[].NatGatewayId" \
+            --output text)
+
+          if [ -z "$NAT_IDS" ]; then
+            echo "No NAT Gateways found."
+          else
+            for NAT_ID in $NAT_IDS; do
+              echo "Deleting NAT Gateway: $NAT_ID"
+
+              aws ec2 delete-nat-gateway \
+                --nat-gateway-id "$NAT_ID" \
+                --region ap-south-1
+            done
+
+            echo "Waiting for NAT Gateways to be deleted..."
+
+            for i in {1..30}; do
+              REMAINING=$(aws ec2 describe-nat-gateways \
+                --region ap-south-1 \
+                --filter "Name=vpc-id,Values=$VPC_ID" \
+                --query "NatGateways[?State!='deleted'].NatGatewayId" \
+                --output text)
+
+              if [ -z "$REMAINING" ]; then
+                echo "All NAT Gateways deleted."
+                break
+              fi
+
+              echo "Still deleting: $REMAINING"
+              sleep 20
+            done
+          fi
+
+      # --------------------------------------------------
+      # RELEASE ELASTIC IPs USED BY NAT GATEWAYS
+      # --------------------------------------------------
+      - name: Release NAT Elastic IPs
+        shell: bash
+        run: |
+          set -e
+
+          ALLOC_IDS=$(aws ec2 describe-addresses \
+            --region ap-south-1 \
+            --query "Addresses[?AssociationId==null].AllocationId" \
+            --output text)
+
+          if [ -z "$ALLOC_IDS" ]; then
+            echo "No unassociated Elastic IPs found."
+          else
+            for ALLOC_ID in $ALLOC_IDS; do
+              echo "Releasing Elastic IP: $ALLOC_ID"
+
+              aws ec2 release-address \
+                --allocation-id "$ALLOC_ID" \
+                --region ap-south-1 || true
+            done
+          fi
+
+      # --------------------------------------------------
+      # DELETE VPC ENDPOINTS
+      # --------------------------------------------------
+      - name: Delete VPC Endpoints
+        shell: bash
+        run: |
+          set -e
+
+          ENDPOINT_IDS=$(aws ec2 describe-vpc-endpoints \
+            --region ap-south-1 \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "VpcEndpoints[].VpcEndpointId" \
+            --output text)
+
+          if [ -z "$ENDPOINT_IDS" ]; then
+            echo "No VPC endpoints found."
+          else
+            aws ec2 delete-vpc-endpoints \
+              --region ap-south-1 \
+              --vpc-endpoint-ids $ENDPOINT_IDS
+          fi
+
+      # --------------------------------------------------
+      # DELETE NETWORK INTERFACES
+      # --------------------------------------------------
+      - name: Delete Network Interfaces
+        shell: bash
+        run: |
+          set -e
+
+          ENI_IDS=$(aws ec2 describe-network-interfaces \
+            --region ap-south-1 \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "NetworkInterfaces[].NetworkInterfaceId" \
+            --output text)
+
+          if [ -z "$ENI_IDS" ]; then
+            echo "No network interfaces found."
+          else
+            for ENI_ID in $ENI_IDS; do
+              echo "Deleting ENI: $ENI_ID"
+
+              aws ec2 delete-network-interface \
+                --network-interface-id "$ENI_ID" \
+                --region ap-south-1 || true
+            done
+          fi
+
+      # --------------------------------------------------
+      # DELETE SUBNETS
+      # --------------------------------------------------
+      - name: Delete Subnets
+        shell: bash
+        run: |
+          set -e
+
+          SUBNET_IDS=$(aws ec2 describe-subnets \
+            --region ap-south-1 \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "Subnets[].SubnetId" \
+            --output text)
+
+          if [ -z "$SUBNET_IDS" ]; then
+            echo "No subnets found."
+          else
+            for SUBNET_ID in $SUBNET_IDS; do
+              echo "Deleting subnet: $SUBNET_ID"
+
+              aws ec2 delete-subnet \
+                --subnet-id "$SUBNET_ID" \
+                --region ap-south-1
+            done
+          fi
+
+      # --------------------------------------------------
+      # DELETE ROUTES FROM CUSTOM ROUTE TABLES
+      # --------------------------------------------------
+      - name: Delete Routes
+        shell: bash
+        run: |
+          set -e
+
+          ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
+            --region ap-south-1 \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "RouteTables[].RouteTableId" \
+            --output text)
+
+          for RT_ID in $ROUTE_TABLE_IDS; do
+            echo "Processing route table: $RT_ID"
+
+            ROUTES=$(aws ec2 describe-route-tables \
+              --route-table-ids "$RT_ID" \
+              --region ap-south-1 \
+              --query "RouteTables[0].Routes[?DestinationCidrBlock!='local'].DestinationCidrBlock" \
+              --output text)
+
+            for DEST in $ROUTES; do
+              if [ -n "$DEST" ]; then
+                echo "Deleting route $DEST from $RT_ID"
+
+                aws ec2 delete-route \
+                  --route-table-id "$RT_ID" \
+                  --destination-cidr-block "$DEST" \
+                  --region ap-south-1 || true
+              fi
+            done
+          done
+
+      # --------------------------------------------------
+      # DELETE ROUTE TABLES
+      # --------------------------------------------------
+      - name: Delete Route Tables
+        shell: bash
+        run: |
+          set -e
+
+          ROUTE_TABLE_IDS=$(aws ec2 describe-route-tables \
+            --region ap-south-1 \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "RouteTables[].RouteTableId" \
+            --output text)
+
+          for RT_ID in $ROUTE_TABLE_IDS; do
+            MAIN=$(aws ec2 describe-route-tables \
+              --route-table-ids "$RT_ID" \
+              --region ap-south-1 \
+              --query "RouteTables[0].Associations[?Main==\`true\`].Main" \
+              --output text)
+
+            if [ "$MAIN" != "True" ]; then
+              echo "Deleting route table: $RT_ID"
+
+              aws ec2 delete-route-table \
+                --route-table-id "$RT_ID" \
+                --region ap-south-1 || true
+            fi
+          done
+
+      # --------------------------------------------------
+      # DELETE INTERNET GATEWAYS
+      # --------------------------------------------------
+      - name: Delete Internet Gateways
+        shell: bash
+        run: |
+          set -e
+
+          IGW_IDS=$(aws ec2 describe-internet-gateways \
+            --region ap-south-1 \
+            --filters "Name=attachment.vpc-id,Values=$VPC_ID" \
+            --query "InternetGateways[].InternetGatewayId" \
+            --output text)
+
+          if [ -z "$IGW_IDS" ]; then
+            echo "No Internet Gateway found."
+          else
+            for IGW_ID in $IGW_IDS; do
+              echo "Detaching Internet Gateway: $IGW_ID"
+
+              aws ec2 detach-internet-gateway \
+                --internet-gateway-id "$IGW_ID" \
+                --vpc-id "$VPC_ID" \
+                --region ap-south-1
+
+              echo "Deleting Internet Gateway: $IGW_ID"
+
+              aws ec2 delete-internet-gateway \
+                --internet-gateway-id "$IGW_ID" \
+                --region ap-south-1
+            done
+          fi
+
+      # --------------------------------------------------
+      # DELETE SECURITY GROUPS
+      # --------------------------------------------------
+      - name: Delete Security Groups
+        shell: bash
+        run: |
+          set -e
+
+          SG_IDS=$(aws ec2 describe-security-groups \
+            --region ap-south-1 \
+            --filters "Name=vpc-id,Values=$VPC_ID" \
+            --query "SecurityGroups[?GroupName!='default'].GroupId" \
+            --output text)
+
+          for SG_ID in $SG_IDS; do
+            echo "Deleting security group: $SG_ID"
+
+            aws ec2 delete-security-group \
+              --group-id "$SG_ID" \
+              --region ap-south-1 || true
+          done
+
+      # --------------------------------------------------
+      # DELETE VPC
+      # --------------------------------------------------
+      - name: Delete VPC
+        shell: bash
+        run: |
+          set -e
+
+          echo "Deleting VPC: $VPC_ID"
+
+          aws ec2 delete-vpc \
+            --vpc-id "$VPC_ID" \
+            --region ap-south-1
+
+          echo "===================================="
+          echo "VPC deleted successfully:"
+          echo "$VPC_ID"
+          echo "===================================="
+
