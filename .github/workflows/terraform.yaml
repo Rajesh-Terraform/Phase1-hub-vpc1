@@ -4,19 +4,21 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  terraform:
+  terraform-destroy:
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          ref: main
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -27,18 +29,19 @@ jobs:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
-      - name: Check AWS Identity
-        run: aws sts get-caller-identity
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
 
       - name: Show Terraform Files
         run: |
           pwd
-          ls -la
-          find . -name "*.tf" -type f
+          echo "===== Terraform Files ====="
+          find . -type f -name "*.tf"
         working-directory: terraform
 
       - name: Terraform Init
-        run: terraform init -input=false
+        run: terraform init
         working-directory: terraform
 
       - name: Terraform Validate
@@ -46,9 +49,9 @@ jobs:
         working-directory: terraform
 
       - name: Terraform Destroy Plan
-        run: terraform plan -destroy -input=false
+        run: terraform plan -destroy -out=destroy.tfplan
         working-directory: terraform
 
       - name: Terraform Destroy
-        run: terraform destroy -auto-approve -input=false
-        working-directory: terraform  
+        run: terraform apply -auto-approve destroy.tfplan
+        working-directory: terraform   
