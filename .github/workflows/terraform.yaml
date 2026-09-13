@@ -27,14 +27,32 @@ jobs:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
+      - name: Check AWS Identity
+        run: aws sts get-caller-identity
+
+      - name: Show Terraform Files
+        run: |
+          pwd
+          ls -la
+          find . -name "*.tf" -type f
+        working-directory: terraform
+
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -input=false
         working-directory: terraform
 
       - name: Terraform Validate
         run: terraform validate
         working-directory: terraform
 
+      - name: Terraform State List
+        run: terraform state list
+        working-directory: terraform
+
+      - name: Terraform Destroy Plan
+        run: terraform plan -destroy -input=false
+        working-directory: terraform
+
       - name: Terraform Destroy
-        run: terraform destroy -auto-approve
+        run: terraform destroy -auto-approve -input=false
         working-directory: terraform  
