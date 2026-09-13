@@ -1,5 +1,4 @@
-
-name: phase1-hub-vpc1-destroy
+name:  phase1-hub-vpc1-destroy  
 
 on:
   push:
@@ -12,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  terraform-destroy:
+  terraform:
     runs-on: ubuntu-latest
 
     steps:
@@ -36,22 +35,20 @@ jobs:
         run: terraform init
         working-directory: terraform
 
+
       - name: Show Files
         run: |
-          pwd
-          ls -la
-          find . -name "*.tf"
-        working-directory: terraform
-
+           pwd
+           ls -la
+           find . -name "*.tf"  
       - name: Terraform Validate
         run: terraform validate
         working-directory: terraform
 
-      - name: Terraform Destroy Plan
-        run: terraform plan -destroy -out=destroy.tfplan
+      - name: Terraform Plan
+        run: terraform plan -out=tfplan
         working-directory: terraform
 
       - name: Terraform Destroy
-        run: terraform apply -auto-approve destroy.tfplan
-        working-directory: terraform    
-
+        run: terraform destroy -auto-approve
+        working-directory: terraform  
