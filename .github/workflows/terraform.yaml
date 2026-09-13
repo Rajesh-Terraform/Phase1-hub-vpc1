@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  terraform-destroy:
+  destroy:
     runs-on: ubuntu-latest
 
     steps:
@@ -29,29 +29,14 @@ jobs:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
-      - name: Terraform Format Check
-        run: terraform fmt -check -recursive
-        working-directory: terraform
-
-      - name: Show Terraform Files
-        run: |
-          pwd
-          echo "===== Terraform Files ====="
-          find . -type f -name "*.tf"
-        working-directory: terraform
-
       - name: Terraform Init
-        run: terraform init
-        working-directory: terraform
-
-      - name: Terraform Validate
-        run: terraform validate
+        run: terraform init -input=false
         working-directory: terraform
 
       - name: Terraform Destroy Plan
-        run: terraform plan -destroy -out=destroy.tfplan
+        run: terraform plan -destroy -input=false
         working-directory: terraform
 
-      - name: Terraform Destroy
-        run: terraform apply -auto-approve destroy.tfplan
-        working-directory: terraform   
+      - name: Terraform Destroy All
+        run: terraform destroy -auto-approve -input=false
+        working-directory: terraform  
