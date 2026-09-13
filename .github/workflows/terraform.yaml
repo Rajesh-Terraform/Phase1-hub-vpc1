@@ -6,9 +6,6 @@ on:
     branches:
       - main
   workflow_dispatch:
-
-
-
 permissions:
   id-token: write
   contents: read
@@ -230,4 +227,4 @@ jobs:
           echo "VPC ID: $VPC_ID"
           echo "Region: ap-south-1"
           echo "=========================================="
-```
+
