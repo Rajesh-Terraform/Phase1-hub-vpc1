@@ -1,9 +1,6 @@
 name: phase1-hub-vpc1-destroy
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -27,19 +24,29 @@ jobs:
           role-to-assume: arn:aws:iam::647132523867:role/github-actions-terraform-role-v1
           aws-region: ap-south-1
 
-      - name: Show Files
+      - name: Show Terraform Files
         run: |
           pwd
+          echo "Repository files:"
           ls -la
+          echo ""
           echo "Terraform files:"
-          find . -name "*.tf" -type f
+          find terraform -type f -name "*.tf" -print
 
       - name: Terraform Format Check
-        run: terraform fmt -check
+        run: terraform fmt -check -recursive
         working-directory: terraform
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform init -input=false
+        working-directory: terraform
+
+      - name: Terraform Workspace
+        run: terraform workspace show
+        working-directory: terraform
+
+      - name: Terraform State List
+        run: terraform state list
         working-directory: terraform
 
       - name: Terraform Validate
@@ -47,9 +54,9 @@ jobs:
         working-directory: terraform
 
       - name: Terraform Destroy Plan
-        run: terraform plan -destroy -out=tfplan-destroy
+        run: terraform plan -destroy -input=false -out=tfplan-destroy
         working-directory: terraform
 
       - name: Terraform Destroy
-        run: terraform apply -auto-approve tfplan-destroy
-        working-directory: terraform  
+        run: terraform apply -input=false -auto-approve tfplan-destroy
+        working-directory: terraform 
