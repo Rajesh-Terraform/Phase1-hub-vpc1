@@ -55,11 +55,6 @@ jobs:
         run: terraform validate
         working-directory: terraform
 
-      # 8. Show Terraform State
-      - name: Terraform State List
-        run: terraform state list
-        working-directory: terraform
-
       # 9. Terraform Destroy Plan
       - name: Terraform Destroy Plan
         run: terraform plan -destroy -input=false
